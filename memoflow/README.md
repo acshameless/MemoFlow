@@ -25,11 +25,13 @@ cd memoflow
 pip install -e .
 ```
 
-### 从 PyPI 安装（发布后）
+### 从 PyPI 安装
 
 ```bash
 pip install memoflow
 ```
+
+**注意**：MemoFlow 目前处于 Beta 阶段。正式版本发布后，可以通过上述命令安装。
 
 ## 快速开始
 
