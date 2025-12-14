@@ -48,8 +48,15 @@ def show_status(
         filtered_files = [f for f in filtered_files if f.status == status_filter]
     
     # 计算 Inbox 文件数量（只有没有指定类型的文件才归类到 inbox）
-    # Inbox 文件是指：type 为空或 None，或者 ID 以 HANK-00. 开头（临时 ID）
-    inbox_count = sum(1 for f in all_files if (not f.type or f.type == "") and f.id.startswith("HANK-00."))
+    # Inbox 文件是指：type 为空或 None，或者 ID 以 {prefix}-00. 开头（临时 ID，支持两位或三位小数）
+    schema = schema_mgr.get_schema()
+    prefix = schema.user_prefix
+    inbox_count = sum(1 for f in all_files 
+                     if (not f.type or f.type == "") and (
+                         f.id.startswith(f"{prefix}-00.") or 
+                         f.id.startswith(f"{prefix}-00.0") or
+                         f.id.startswith(f"{prefix}-00.00")
+                     ))
     
     # 按类型统计开放文件
     type_counts = {}

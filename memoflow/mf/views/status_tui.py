@@ -63,10 +63,9 @@ class StatusTUI(App):
     BINDINGS = [
         Binding("q", "quit", "Quit", priority=True),
         Binding("/", "toggle_filter", "Filter", priority=True),
-        Binding("enter", "view_detail", "View", priority=True, show=False),
-        Binding("escape", "close_detail", "Close", priority=True),
+        Binding("enter", "view_detail", "View", priority=False, show=False),
+        Binding("escape", "close_detail_or_editor", "Close", priority=True, show=False),
         Binding("r", "refresh", "Refresh", priority=True),
-        Binding("f", "finish_task", "Finish", priority=True),
         Binding("t", "toggle_type", "Type", priority=True),
         Binding("s", "toggle_status", "Status", priority=True),
         Binding("e", "open_editor", "Editor", priority=True),
@@ -90,6 +89,8 @@ class StatusTUI(App):
         self.status_filter: Optional[str] = None
         self.selected_row: Optional[int] = None
         self._pending_action: Optional[tuple] = None  # 用于存储待处理的操作
+        self._editor_process: Optional[subprocess.Popen] = None  # 用于存储编辑器进程（GUI编辑器）
+        self._editor_mode: bool = False  # 标记是否在编辑器模式
         
         # 配置编辑器
         self.editor = editor or self._detect_editor()
@@ -150,7 +151,22 @@ class StatusTUI(App):
         table.focus()
     
     def on_key(self, event: events.Key) -> None:
-        """处理按键事件，确保 c、u、i 按键能正常工作"""
+        """处理按键事件，确保 c、u、n、m 等按键能正常工作"""
+        # 如果编辑器模式激活，只有 ESC 键有效
+        if self._editor_mode:
+            if event.key == "escape":
+                self.action_close_editor()
+                event.prevent_default()
+                event.stop()
+            return
+        
+        # ESC 键处理：优先关闭详情面板，然后是编辑器
+        if event.key == "escape":
+            self.action_close_detail_or_editor()
+            event.prevent_default()
+            event.stop()
+            return
+        
         # 检查输入框是否有焦点，如果有焦点且有 pending_action，阻止 Enter 键的 action binding
         try:
             filter_input = self.query_one("#filter-input", Input)
@@ -162,6 +178,10 @@ class StatusTUI(App):
                     event.stop()
                     # 手动触发 Input.Submitted 事件
                     filter_input.post_message(Input.Submitted(filter_input, filter_input.value))
+                    return
+                # 如果输入框有焦点但没有 pending_action，Enter 键也应该被输入框处理（用于正常过滤）
+                elif event.key == "enter":
+                    # 让输入框自己处理 Enter 键（可能会触发 Input.Submitted）
                     return
         except Exception as e:
             logger.debug(f"Error in on_key check: {e}")
@@ -242,9 +262,15 @@ class StatusTUI(App):
             logger.warning(f"Stats widget not ready: {e}")
             return
         
-        # 计算统计
+        # 计算统计（支持动态前缀和两位/三位小数格式）
+        schema = self.schema_mgr.get_schema()
+        prefix = schema.user_prefix
         inbox_count = sum(1 for f in self.all_files 
-                         if (not f.type or f.type == "") and f.id.startswith("HANK-00."))
+                         if (not f.type or f.type == "") and (
+                             f.id.startswith(f"{prefix}-00.") or 
+                             f.id.startswith(f"{prefix}-00.0") or
+                             f.id.startswith(f"{prefix}-00.00")
+                         ))
         
         type_counts = {}
         for memo in self.all_files:
@@ -301,6 +327,17 @@ class StatusTUI(App):
     
     def action_toggle_filter(self) -> None:
         """切换过滤器显示"""
+        # 如果详情面板显示，按 / 键应该关闭详情面板（而不是切换过滤器）
+        detail_panel = self.query_one("#detail-panel", Static)
+        if detail_panel.display:
+            self.action_close_detail()
+            return
+        
+        # 如果编辑器模式激活，按 / 键应该退出编辑器模式
+        if self._editor_mode:
+            self.action_close_editor()
+            return
+        
         filter_input = self.query_one("#filter-input", Input)
         if filter_input.has_class("hidden"):
             # 如果有待处理的操作，先清除
@@ -385,21 +422,29 @@ class StatusTUI(App):
                 elif action_type == "capture":
                     # 处理捕获操作
                     # 格式: "type:content" 或 "content"
-                    content = new_value
+                    input_value = new_value
                     file_type = None
+                    content = ""
                     
-                    # 检查是否有类型前缀
-                    if ":" in content and len(content.split(":", 1)) == 2:
-                        type_part, content = content.split(":", 1)
-                        type_part = type_part.strip()
-                        content = content.strip()
-                        
-                        valid_types = ["task", "meeting", "note", "email"]
-                        if type_part in valid_types:
-                            file_type = type_part
+                    # 检查是否有类型前缀（格式：type:content）
+                    if ":" in input_value:
+                        parts = input_value.split(":", 1)
+                        if len(parts) == 2:
+                            type_part = parts[0].strip()
+                            content = parts[1].strip()
+                            
+                            valid_types = ["task", "meeting", "note", "email"]
+                            if type_part in valid_types:
+                                file_type = type_part
+                            else:
+                                self.notify(f"Invalid type: {type_part}. Must be one of: {', '.join(valid_types)}", severity="error")
+                                return
                         else:
-                            self.notify(f"Invalid type: {type_part}. Must be one of: {', '.join(valid_types)}", severity="error")
-                            return
+                            # 如果分割后不是两部分，说明格式不对，使用整个输入作为内容
+                            content = input_value.strip()
+                    else:
+                        # 没有冒号，整个输入作为内容（untyped）
+                        content = input_value.strip()
                     
                     if not content:
                         self.notify("Content cannot be empty", severity="error")
@@ -407,8 +452,10 @@ class StatusTUI(App):
                     
                     try:
                         from mf.commands.capture import handle_capture
+                        logger.debug(f"Capturing: type={file_type}, content={content[:50]}...")
                         hash_id, file_path = handle_capture(file_type, content, self.repo_root)
-                        self.notify(f"✓ Captured: {file_path.name} (hash: {hash_id})", severity="success", timeout=3.0)
+                        type_display = file_type if file_type else "untyped"
+                        self.notify(f"✓ Captured ({type_display}): {file_path.name} (hash: {hash_id})", severity="success", timeout=3.0)
                         # 刷新数据
                         self.refresh_data()
                         self.update_table()
@@ -419,16 +466,47 @@ class StatusTUI(App):
                         self.notify(f"✗ Error: {e}", severity="error", timeout=5.0)
                 
                 elif action_type == "move":
-                    # 验证新ID
+                    # 处理移动操作
+                    # 支持两种格式：
+                    # 1. area_id.category_id (如 "11.1" 表示区域11，类别1) - 自动生成下一个可用ID
+                    # 2. 完整的 JD ID (如 "AC-11.001")
                     if not new_value:
                         self.notify("ID cannot be empty", severity="error")
                         return
                     
                     try:
-                        logger.debug(f"Moving file {memo.uuid} from {memo.id} to {new_value}")
+                        new_jd_id = None
+                        
+                        # 检查是否是 area.category 格式（如 "11.1"）
+                        if "." in new_value and not "-" in new_value:
+                            # 尝试解析为 area_id.category_id 格式
+                            try:
+                                parts = new_value.split(".")
+                                if len(parts) == 2:
+                                    area_id = int(parts[0])
+                                    category_id = int(parts[1])
+                                    
+                                    # 生成下一个可用的 ID
+                                    new_jd_id = self.schema_mgr.generate_next_id(area_id, category_id, self.repo_root)
+                                    if not new_jd_id:
+                                        self.notify(f"No available ID in area {area_id}, category {category_id}", severity="error")
+                                        return
+                                    self.notify(f"Auto-generated ID: {new_jd_id}", severity="info", timeout=2.0)
+                            except (ValueError, IndexError):
+                                # 解析失败，当作完整的 JD ID 处理
+                                new_jd_id = new_value.strip()
+                        else:
+                            # 完整的 JD ID 格式
+                            new_jd_id = new_value.strip()
+                        
+                        if not new_jd_id:
+                            self.notify("Invalid format. Use 'area.category' (e.g., 11.1) or JD ID (e.g., AC-11.001)", severity="error")
+                            return
+                        
+                        logger.debug(f"Moving file {memo.uuid} from {memo.id} to {new_jd_id}")
                         from mf.commands.organize import handle_move
-                        new_file_path = handle_move(memo.uuid, memo.id, new_value, self.repo_root)
-                        logger.debug(f"Successfully moved file {memo.uuid} to new ID {new_value}")
+                        new_file_path = handle_move(memo.uuid, memo.id, new_jd_id, self.repo_root)
+                        logger.debug(f"Successfully moved file {memo.uuid} to new ID {new_jd_id}")
                         self.notify(f"✓ Moved to: {new_file_path}", severity="success", timeout=3.0)
                         # 刷新数据
                         self.refresh_data()
@@ -439,7 +517,7 @@ class StatusTUI(App):
                         logger.error(f"Error moving file: {e}", exc_info=True)
                         self.notify(f"✗ Error: {e}", severity="error", timeout=5.0)
             else:
-                # 正常的过滤器输入
+                # 没有 pending_action，这是正常的过滤器输入
                 self.current_filter = event.value
                 self.apply_filters()
                 self.update_table()
@@ -453,6 +531,8 @@ class StatusTUI(App):
             if not filter_input.has_class("hidden") and filter_input.has_focus:
                 # 如果有 pending_action，Enter 键应该提交输入，而不是查看详情
                 if self._pending_action:
+                    # 手动触发 Input.Submitted 事件，确保输入被处理
+                    filter_input.post_message(Input.Submitted(filter_input, filter_input.value))
                     return  # 让输入框的 on_input_submitted 处理
         except:
             pass
@@ -501,13 +581,48 @@ class StatusTUI(App):
             detail_panel.display = True
     
     def action_close_detail(self) -> None:
-        """关闭详情面板"""
+        """关闭详情面板（由 / 键调用）"""
         detail_panel = self.query_one("#detail-panel", Static)
         if detail_panel.display:
             # 如果详情面板显示，则关闭它
             detail_panel.display = False
             self.query_one("#file-table", DataTable).focus()
-        # 如果详情面板未显示，escape 键会退出应用（通过默认行为）
+    
+    def action_close_detail_or_editor(self) -> None:
+        """关闭详情面板或编辑器（由 ESC 键调用）"""
+        # 优先检查详情面板
+        detail_panel = self.query_one("#detail-panel", Static)
+        if detail_panel.display:
+            self.action_close_detail()
+            return
+        
+        # 然后检查编辑器模式
+        if self._editor_mode:
+            self.action_close_editor()
+            return
+    
+    def action_close_editor(self) -> None:
+        """关闭编辑器（仅在编辑器模式时有效）"""
+        if not self._editor_mode:
+            return
+        
+        # 如果是 GUI 编辑器，尝试终止进程
+        if self._editor_process and self._editor_process.poll() is None:
+            try:
+                self._editor_process.terminate()
+                self._editor_process.wait(timeout=2)
+            except Exception:
+                # 如果正常终止失败，强制杀死
+                try:
+                    self._editor_process.kill()
+                except Exception:
+                    pass
+            finally:
+                self._editor_process = None
+        
+        self._editor_mode = False
+        self.notify("Editor closed", severity="info")
+        self.action_refresh()
     
     def action_refresh(self) -> None:
         """刷新数据"""
@@ -515,27 +630,6 @@ class StatusTUI(App):
         self.update_stats()
         self.update_table()
         self.notify("Data refreshed", severity="success")
-    
-    def action_finish_task(self) -> None:
-        """完成任务"""
-        table = self.query_one("#file-table", DataTable)
-        cursor_row = table.cursor_row
-        
-        if cursor_row is not None and cursor_row < len(self.filtered_files):
-            memo = self.filtered_files[cursor_row]
-            if memo.status == "open":
-                try:
-                    self.file_mgr.update_file(
-                        memo.uuid,
-                        frontmatter_updates={"status": "done"},
-                        commit_message="mark as done"
-                    )
-                    self.notify(f"Marked {memo.uuid} as done", severity="success")
-                    self.action_refresh()
-                except Exception as e:
-                    self.notify(f"Error: {e}", severity="error")
-            else:
-                self.notify("File is already done", severity="warning")
     
     def action_toggle_type(self) -> None:
         """切换类型过滤"""
@@ -584,22 +678,29 @@ class StatusTUI(App):
             
             if is_terminal_editor:
                 # 对于终端编辑器，需要同步调用并暂停 TUI
-                self.notify(f"Opening {file_path.name} with {self.editor}...", severity="info")
+                self.notify(f"Opening {file_path.name} with {self.editor}... Press ESC to exit editor", severity="info")
+                self._editor_mode = True
                 # 暂停 TUI 并运行编辑器（suspend 返回一个上下文管理器）
-                with self.suspend():
-                    # 使用 subprocess.run 同步执行，等待编辑完成
-                    result = subprocess.run(
-                        [self.editor, str(file_path)],
-                        check=False  # 不抛出异常，让用户正常退出编辑器
-                    )
+                try:
+                    with self.suspend():
+                        # 使用 subprocess.run 同步执行，等待编辑完成
+                        result = subprocess.run(
+                            [self.editor, str(file_path)],
+                            check=False  # 不抛出异常，让用户正常退出编辑器
+                        )
+                finally:
+                    self._editor_mode = False
                 # 恢复 TUI 后刷新数据，因为文件可能已被修改
                 self.action_refresh()
             else:
                 # 对于 GUI 编辑器（typora, code 等），异步打开
-                subprocess.Popen([self.editor, str(file_path)], 
-                               stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL)
-                self.notify(f"Opening {file_path.name} with {self.editor}", severity="success")
+                self._editor_mode = True
+                self._editor_process = subprocess.Popen(
+                    [self.editor, str(file_path)], 
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+                self.notify(f"Opening {file_path.name} with {self.editor}. Press ESC to close", severity="success")
         except Exception as e:
             self.notify(f"Failed to open editor: {e}", severity="error")
             logger.error(f"Error opening editor {self.editor}: {e}")
@@ -723,22 +824,38 @@ class StatusTUI(App):
             logger.error(f"Error in action_capture: {e}")
     
     def action_move_file(self) -> None:
-        """移动选中的文件"""
+        """移动选中的文件（支持交互式选择区域和类别）"""
         memo = self._get_selected_memo()
         if not memo:
             self.notify("No file selected", severity="warning")
             return
         
         try:
+            # 获取可用的区域和类别列表
+            schema = self.schema_mgr.get_schema()
+            areas = schema.areas
+            
+            # 构建简化的区域和类别提示（只显示关键信息）
+            area_summary = []
+            for area in areas:
+                cat_names = [f"{cat.id}:{cat.name}" for cat in area.categories]
+                area_summary.append(f"{area.id}({area.name}): {', '.join(cat_names)}")
+            
+            summary_text = " | ".join(area_summary)
+            
             filter_input = self.query_one("#filter-input", Input)
-            filter_input.placeholder = f"Enter new JD ID (current: {memo.id})..."
+            filter_input.placeholder = f"Enter: area.category (e.g., 11.1) or JD ID (e.g., AC-11.001)..."
             filter_input.value = ""
             filter_input.remove_class("hidden")
             filter_input.focus()
             
             # 设置标记，表示这是移动操作
             self._pending_action = ("move", memo)
-            self.notify(f"Enter new JD ID for {memo.uuid} (current: {memo.id})", severity="info", timeout=5.0)
+            self.notify(
+                f"Move to area.category (e.g., 11.1) or JD ID. Areas: {summary_text}",
+                severity="info",
+                timeout=6.0
+            )
         except Exception as e:
             self.notify(f"Error: {e}", severity="error")
             logger.error(f"Error in action_move_file: {e}")

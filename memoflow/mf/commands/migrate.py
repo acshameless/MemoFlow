@@ -51,11 +51,29 @@ def handle_update_prefix(
                     hash_mgr.update_path(memo.uuid, memo.file_path, new_id)
                 
                 # 更新文件的 frontmatter 中的 id 字段
-                file_mgr.update_file(
+                # 准备提交的文件列表（包括 hash_index.json）
+                files_to_commit = [memo.file_path]
+                hash_index_file = repo_root / ".mf" / "hash_index.json"
+                if hash_index_file.exists():
+                    files_to_commit.append(hash_index_file)
+                
+                # 手动更新文件并提交（包括 hash_index.json）
+                import frontmatter
+                post = frontmatter.load(memo.file_path)
+                post.metadata['id'] = new_id
+                
+                with open(memo.file_path, 'w', encoding='utf-8') as f:
+                    f.write(frontmatter.dumps(post))
+                
+                # 提交文件更改和 hash_index.json
+                from mf.core.git_engine import CommitType
+                git_engine.auto_commit(
+                    CommitType.REFACTOR,
                     memo.uuid,
-                    frontmatter_updates={"id": new_id},
-                    commit_message=f"update prefix from {old_prefix} to {new_prefix}"
+                    f"update prefix from {old_prefix} to {new_prefix}",
+                    files_to_commit
                 )
+                
                 updated_count += 1
                 logger.info(f"Updated {memo.uuid}: {memo.id} -> {new_id}")
             except Exception as e:

@@ -121,10 +121,18 @@ class Schema:
         range_start = category.range[0]
         range_end = category.range[1]
         # 检查是否需要三位小数（如果 range 包含三位小数部分）
-        if range_start % 0.01 >= 0.001 or range_end % 0.01 >= 0.001:
-            category_range = f"{range_start:.3f}-{range_end:.3f}"
+        # 使用更可靠的方法：检查格式化后的字符串是否包含三位小数
+        range_start_str_3f = f"{range_start:.3f}"
+        range_end_str_3f = f"{range_end:.3f}"
+        range_start_str_2f = f"{range_start:.2f}"
+        range_end_str_2f = f"{range_end:.2f}"
+        
+        # 如果三位小数格式去除末尾零后不等于两位小数格式，使用三位小数
+        if (range_start_str_3f.rstrip('0').rstrip('.') != range_start_str_2f.rstrip('0').rstrip('.') or
+            range_end_str_3f.rstrip('0').rstrip('.') != range_end_str_2f.rstrip('0').rstrip('.')):
+            category_range = f"{range_start_str_3f}-{range_end_str_3f}"
         else:
-            category_range = f"{range_start:.2f}-{range_end:.2f}"
+            category_range = f"{range_start_str_2f}-{range_end_str_2f}"
         
         return repo_root / area_range / category_range
     

@@ -103,13 +103,20 @@ class FileManager:
         # 注册到 Hash Index
         self.hash_mgr.register(hash_id, file_path, temp_id)
         
+        # 准备提交的文件列表
+        files_to_commit = [file_path]
+        # 添加 hash_index.json（如果被修改）
+        hash_index_file = self.repo_root / ".mf" / "hash_index.json"
+        if hash_index_file.exists():
+            files_to_commit.append(hash_index_file)
+        
         # 自动提交
         try:
             self.git_engine.auto_commit(
                 CommitType.FEAT,
                 "new",
                 f"capture {title}",
-                [file_path]
+                files_to_commit
             )
         except Exception as e:
             logger.warning(f"Failed to auto-commit: {e}")
@@ -190,13 +197,21 @@ class FileManager:
         # 更新 Hash 索引
         self.hash_mgr.update_path(hash_id, new_path, new_jd_id)
         
-        # 自动提交
+        # 准备提交的文件列表
+        files_to_commit = [new_path]
+        # 添加 hash_index.json（如果被修改）
+        hash_index_file = self.repo_root / ".mf" / "hash_index.json"
+        if hash_index_file.exists():
+            files_to_commit.append(hash_index_file)
+        
+        # 自动提交（包括旧文件删除和新文件添加）
         try:
             self.git_engine.auto_commit(
                 CommitType.REFACTOR,
                 hash_id,
                 f"move from {old_path} to {new_jd_id}",
-                [new_path]
+                files_to_commit,
+                removed_files=[old_file_path]
             )
         except Exception as e:
             logger.warning(f"Failed to auto-commit: {e}")
@@ -251,13 +266,23 @@ class FileManager:
             else:
                 commit_message = "update file"
         
+        # 准备提交的文件列表
+        files_to_commit = [memo.file_path]
+        # 检查 hash_index.json 是否被修改（通过 register 或 update_path）
+        # 注意：update_file 本身不直接修改 hash_index，但为了完整性，我们检查一下
+        hash_index_file = self.repo_root / ".mf" / "hash_index.json"
+        if hash_index_file.exists():
+            # 如果 hash_index 可能被修改（例如通过其他操作），也包含它
+            # 但 update_file 本身不修改 hash_index，所以这里不添加
+            pass
+        
         # 自动提交
         try:
             self.git_engine.auto_commit(
                 CommitType.DOCS,
                 hash_id,
                 commit_message,
-                [memo.file_path]
+                files_to_commit
             )
         except Exception as e:
             logger.warning(f"Failed to auto-commit: {e}")

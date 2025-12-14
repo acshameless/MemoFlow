@@ -18,6 +18,7 @@ app = typer.Typer(
     help="MemoFlow - Your Second Brain",
     add_completion=False,
     no_args_is_help=True,
+    rich_markup_mode="rich",
     context_settings={"help_option_names": ["-h", "--help"]},
 )
 
@@ -355,33 +356,32 @@ def status(
     editor: Optional[str] = typer.Option(None, "--editor", "-e", help="External editor command (e.g., typora, code, vim). Overrides repository config. If not specified, uses repository config or auto-detects."),
 ):
     """Show status: mf status
-    
+
     Examples:
-        mf status                    # Interactive TUI mode (default)
-        mf status --no-interactive    # Static output mode
-        mf status --all              # Show all files (static mode)
-        mf status --limit 50        # Show 50 most recent files (static mode)
-        mf status --type task       # Show only tasks (static mode)
-        mf status --status open     # Show only open files (static mode)
-    
+      mf status                    # Interactive TUI mode (default)
+      mf status --no-interactive    # Static output mode
+      mf status --all              # Show all files (static mode)
+      mf status --limit 50         # Show 50 most recent files (static mode)
+      mf status --type task        # Show only tasks (static mode)
+      mf status --status open      # Show only open files (static mode)
+
     Interactive Mode Key Bindings:
-        q          - Quit
-        /          - Toggle filter input
-        Enter      - View file detail
-        Escape     - Close detail panel or quit
-        r          - Refresh data
-        f          - Finish selected task
-        t          - Toggle type filter
-        s          - Toggle status filter
-        e          - Open file in external editor
-        c          - Change file type
-        u          - Change file status
-        n          - New/Capture (create new memo)
-        m          - Move file (change JD ID)
-        R          - Rebuild hash index
-        l          - Show list view (tree)
-        T          - Show timeline view
-        C          - Show calendar view
+      q          - Quit
+      /          - Toggle filter input / Close detail panel / Close editor
+      Enter      - View file detail
+      Escape     - Close detail panel / Close editor
+      r          - Refresh data
+      t          - Toggle type filter
+      s          - Toggle status filter
+      e          - Open file in external editor
+      c          - Change file type
+      u          - Change file status (toggle open/done)
+      n          - New/Capture (create new memo)
+      m          - Move file (change JD ID)
+      R          - Rebuild hash index
+      l          - Show list view (tree)
+      T          - Show timeline view
+      C          - Show calendar view
     """
     repo_path = repo or _global_repo
     repo_root = get_repo_root(repo_path)

@@ -4,7 +4,7 @@ import re
 import logging
 from enum import Enum
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Union
 from datetime import datetime
 from git import Repo, InvalidGitRepositoryError
 
@@ -47,7 +47,8 @@ class GitEngine:
         commit_type: CommitType,
         scope: str,  # Hash ID 或 "new"
         message: str,
-        files: List[Path]
+        files: List[Path],
+        removed_files: Optional[List[Path]] = None
     ) -> str:
         """自动 Stage + Commit
         
@@ -55,12 +56,13 @@ class GitEngine:
             commit_type: 提交类型
             scope: Hash ID 或 "new"
             message: 提交消息
-            files: 要提交的文件列表
+            files: 要提交的文件列表（新增或修改的文件）
+            removed_files: 要删除的文件列表（可选）
         
         Returns:
             提交的 SHA
         """
-        # Stage 文件
+        # Stage 新增/修改的文件
         for file in files:
             file_path = Path(file)
             if not file_path.exists():
@@ -73,6 +75,24 @@ class GitEngine:
             except ValueError:
                 # 如果文件不在仓库内，使用绝对路径
                 self.repo.index.add([str(file_path)])
+        
+        # Stage 删除的文件
+        if removed_files:
+            for file in removed_files:
+                file_path = Path(file)
+                try:
+                    # 使用相对路径
+                    relative_path = file_path.relative_to(self.repo_path)
+                    # 检查文件是否在 Git 中跟踪
+                    if relative_path in [item.path for item in self.repo.index.entries]:
+                        self.repo.index.remove([str(relative_path)])
+                    else:
+                        # 如果文件不在索引中，尝试使用绝对路径
+                        if str(file_path) in [item.path for item in self.repo.index.entries]:
+                            self.repo.index.remove([str(file_path)])
+                except (ValueError, KeyError):
+                    # 文件可能不在仓库中或已被删除，跳过
+                    logger.debug(f"File {file_path} not in Git index, skipping removal")
         
         # 构建 Commit Message
         full_message = f"{commit_type.value}({scope}): {message}"

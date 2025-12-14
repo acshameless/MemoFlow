@@ -109,6 +109,22 @@ def handle_rebuild_index(repo_root: Path) -> int:
         重建的文件数量
     """
     hash_mgr = HashManager(repo_root)
+    git_engine = GitEngine(repo_root)
     count = hash_mgr.rebuild_index()
+    
+    # 提交 hash_index.json 的更改
+    hash_index_file = repo_root / ".mf" / "hash_index.json"
+    if hash_index_file.exists():
+        try:
+            from mf.core.git_engine import CommitType
+            git_engine.auto_commit(
+                CommitType.CHORE,
+                "index",
+                f"rebuild index with {count} files",
+                [hash_index_file]
+            )
+        except Exception as e:
+            logger.warning(f"Failed to auto-commit index rebuild: {e}")
+    
     logger.info(f"Rebuilt index with {count} files")
     return count
