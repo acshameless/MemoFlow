@@ -1,0 +1,67 @@
+[project]
+name = "memoflow"
+version = "0.1.0"
+description = "MemoFlow - Your Second Brain: A command-line workflow management tool"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "MemoFlow Team"}
+]
+keywords = ["workflow", "productivity", "markdown", "git", "cli"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "typer>=0.9.0",
+    "gitpython>=3.1.40",
+    "pyyaml>=6.0",
+    "python-frontmatter>=1.0.0",
+    "python-dateutil>=2.8.0",
+]
+
+[project.optional-dependencies]
+graph = [
+    "nebula3-python>=3.7.0",
+]
+tui = [
+    "rich>=13.0.0",
+    "textual>=0.40.0",
+]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "pytest-mock>=3.11.0",
+]
+
+[project.scripts]
+mf = "mf.cli:app"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--cov=mf",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+]
+
+[tool.setuptools]
+packages = ["mf"]
+
+[tool.setuptools.package-data]
+mf = ["py.typed"]

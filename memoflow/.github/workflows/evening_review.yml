@@ -1,0 +1,35 @@
+name: Evening Review
+
+on:
+  schedule:
+    # UTC 15:00 = JST 0:00 (可调整时区)
+    - cron: '0 15 * * *'
+  workflow_dispatch:  # 支持手动触发
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install MemoFlow
+        run: |
+          pip install -e .
+      
+      - name: Generate Daily Review
+        run: |
+          mf ci --mode evening > Daily_Review.md
+      
+      - name: Commit and Push
+        run: |
+          git config user.name "MemoFlow Bot"
+          git config user.email "bot@memoflow.local"
+          git add Daily_Review.md
+          git commit -m "chore(ci): evening review $(date +%Y-%m-%d)" || exit 0
+          git push || exit 0

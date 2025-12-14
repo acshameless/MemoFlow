@@ -1,0 +1,35 @@
+name: Morning Wake
+
+on:
+  schedule:
+    # UTC 0:00 = JST 9:00 (可调整时区)
+    - cron: '0 0 * * *'
+  workflow_dispatch:  # 支持手动触发
+
+jobs:
+  wake:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install MemoFlow
+        run: |
+          pip install -e .
+      
+      - name: Generate Daily Focus
+        run: |
+          mf ci --mode morning > Daily_Focus.md
+      
+      - name: Commit and Push
+        run: |
+          git config user.name "MemoFlow Bot"
+          git config user.email "bot@memoflow.local"
+          git add Daily_Focus.md
+          git commit -m "chore(ci): morning focus $(date +%Y-%m-%d)" || exit 0
+          git push || exit 0
