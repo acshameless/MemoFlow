@@ -7,6 +7,8 @@ from mf.core.schema_manager import SchemaManager
 from mf.core.git_engine import GitEngine
 from mf.core.hash_manager import HashManager
 from mf.core.config_manager import ConfigManager
+from mf.core.file_manager import FileManager
+from mf.core.repo_registry import RepoRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -119,4 +121,14 @@ def handle_init(
             logger.debug(f"Could not check for prefix migration: {e}")
     
     logger.info(f"Initialized MemoFlow repository at {repo_path}")
+
+    # 注册到全局仓库注册表（使用目录名作为默认名称）
+    try:
+        registry = RepoRegistry()
+        repo_name = repo_path.name
+        registry.add_repo(repo_name, repo_path)
+        logger.info(f"Registered repo '{repo_name}' at {repo_path} in global registry")
+    except Exception as e:
+        logger.warning(f"Failed to register repo in global registry: {e}")
+
     return True

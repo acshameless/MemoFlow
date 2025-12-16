@@ -15,9 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Schema 配置系统：通过 `schema.yaml` 自定义组织结构
 - Git 自动集成：所有操作自动提交，遵循 Angular Commit Convention
 - 配置管理系统：支持仓库级别配置（如默认编辑器）
+- **命名空间管理（Namespace Management）**：全局仓库注册表，支持多仓库管理
+  - 仓库自动注册：`mf init` 时自动将仓库注册到全局注册表（`~/.memoflow/repos.json`）
+  - 命名空间隔离：每个仓库作为独立的命名空间，支持多仓库并行管理
 
 #### CLI 命令
-- `mf init` - 初始化 MemoFlow 仓库（支持 `--editor` 选项配置默认编辑器）
+- `mf init` - 初始化 MemoFlow 仓库（支持 `--editor` 选项配置默认编辑器，自动注册到全局注册表）
 - `mf capture` / `mf new` - 快速捕获内容（支持 meeting, note, task, email）
 - `mf move` / `mf mv` - 使用短哈希移动文件
 - `mf finish` - 标记任务为完成
@@ -26,17 +29,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `mf migrate-prefix <old> <new>` - 批量更新所有文件的用户前缀
 - `mf schema reload` - 重新加载 schema.yaml
 - `mf schema validate` - 验证 schema.yaml 配置
+- **仓库管理命令（`mf repo`）**：
+  - `mf repo list` - 列出所有注册的 MemoFlow 仓库
+  - `mf repo info [name]` - 查看指定仓库的详细信息（名称、路径、用户前缀等）
+  - `mf repo rm [name|--repo PATH] --yes` - 删除仓库及其所有 MemoFlow 数据（危险操作）
 
 #### 视图命令
+- `mf` - 启动交互式 TUI 仪表板（无参数时默认启动）
 - `mf list` - 列表视图（树形/扁平格式）
-- `mf status` - 状态视图（交互式 TUI 模式或静态输出）
-  - 交互模式：支持实时操作（修改类型、状态、移动文件、打开编辑器等）
-  - 静态模式：使用 `--no-interactive` 选项
+- `mf status` - 显示仓库统计数据和文件列表（静态输出，支持过滤选项）
 - `mf timeline` - 时间轴视图（支持时间范围和类型过滤）
 - `mf calendar` - 日历视图（显示到期任务，突出过期项）
 
-#### 交互式 TUI（`mf status`）
+#### 交互式 TUI（运行 `mf` 启动）
 - 实时查看和操作文件
+- **资源导航（k9s 风格）**：
+  - Context Bar：顶部显示当前 Namespace / Area / Category / View 上下文
+  - Area 过滤：`A` / `a` 键选择 Area，按 Area ID 过滤文件列表
+  - Category 过滤：`G` / `g` 键选择 Category（需先选择 Area），按 Category 范围过滤文件列表
+  - Schema 视图：`S` 键查看完整的 schema 配置（Area/Category 结构）
 - 支持修改文件类型（`c` 键）
 - 支持修改文件状态（`u` 键）
 - 支持打开外部编辑器（`e` 键，可配置 vim/typora/vscode 等）
@@ -63,7 +74,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - 默认 Schema 使用三位小数格式（`10.001-10.099`）以支持更多文件
-- `mf status` 默认使用交互式 TUI 模式
+- **命令结构重构**：
+  - `mf` 无参数时启动交互式 TUI 仪表板（原 `mf status` 的 TUI 功能）
+  - `mf status` 改为显示统计数据和文件列表（静态输出）
 - 所有修改操作都包含明确的 commit message
 
 ### Technical Details
@@ -74,4 +87,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 使用 Rich 美化终端输出
 - 使用 GitPython 进行 Git 操作
 - 使用 python-frontmatter 处理 Markdown
-- 测试覆盖（68 个测试）
+- 测试覆盖（74 个测试，新增 RepoRegistry 和 CLI 端到端测试）

@@ -433,6 +433,140 @@
 
 ---
 
+## 15. Namespace & 资源视图（k9s 风格）
+
+### 15.1 实现 Repo Registry 与命名空间命令
+
+- [ ] **15.1.1 实现/完善 RepoRegistry（仓库注册表）**
+  - 使用 `~/.memoflow/repos.json` 存储命名空间：
+    - 结构：`{"repos": [{"name": "<name>", "path": "<abs_path>"}]}`。
+  - 提供方法：
+    - `list_repos() -> List[RegisteredRepo]`
+    - `add_repo(name: str, path: Path)`（避免重复 name/path，处理冲突时记录日志）
+    - `get_by_name(name: str) -> Optional[RegisteredRepo]`
+    - `find_by_path(path: Path) -> Optional[RegisteredRepo]`
+    - `remove_by_name(name: str) -> bool`
+    - `remove_by_path(path: Path) -> bool`
+  - **参考需求**：10.1（命名空间与仓库注册表）
+
+- [ ] **15.1.2 在 init 流程中自动注册命名空间**
+  - 更新 `mf/commands/init.py` 的 `handle_init()`：
+    - 初始化成功后，使用目录名作为默认 `name`，仓库根目录作为 `path` 调用 `RepoRegistry.add_repo(...)`。
+    - 记录日志（INFO）标明已注册。
+  - 编写测试：
+    - 在临时目录中执行 `handle_init()` 后，检查 `~/.memoflow/repos.json` 是否包含对应条目（可通过注入测试用 registry 文件路径实现）。
+  - **参考需求**：10.1（在 init 时写入注册表）
+
+- [ ] **15.1.3 实现 `mf repo list` 命令**
+  - 在 `mf/cli.py` 中为 `repo_app` 添加 `repo list` 子命令：
+    - 调用 `RepoRegistry.list_repos()`。
+    - 无数据时输出友好提示（例如 `No repositories registered yet. Initialize one with 'mf init'.`）。
+    - 有数据时按表格/行格式输出 `name` 和 `path`。
+  - 编写 CLI 测试：
+    - 使用 Typer 的 `CliRunner` 或等效工具验证输出格式和空列表行为。
+  - **参考需求**：10.1（`mf repo list`）
+
+- [ ] **15.1.4 实现 `mf repo info` 命令**
+  - 在 `mf/cli.py` 中完善 `repo info` 子命令：
+    - 支持 `mf repo info <name>`：
+      - 从 `RepoRegistry.get_by_name(name)` 获取路径，若不存在则退出并报错。
+    - 支持 `mf repo info`（无 name）：
+      - 使用 `--repo/-r` 或全局 `_global_repo`，若都为空则使用当前目录，通过 `get_repo_root()` 解析仓库根。
+      - 尝试在注册表中查找该路径；若不存在则使用目录名作为 name 自动注册一条新命名空间记录。
+    - 加载 `schema.yaml` 和 `.mf/hash_index.json`，使用现有服务（`SchemaManager`、`FileManager`、`HashManager` 等）：
+      - 计算 `user_prefix`、Areas 数、Categories 总数。
+      - 查询所有 Memo，计算总数和 Inbox 文件数（与 `status` 视图定义保持一致）。
+    - 以清晰的行格式输出信息（`Repo name / Path / User prefix / Areas / Categories / Files (Inbox: N)`）。
+  - 编写 CLI 测试：
+    - `mf repo info <name>` 正常路径；
+    - 当前目录为 MemoFlow 仓库时的自动注册行为；
+    - 错误路径 / 未找到 name 的错误提示。
+  - **参考需求**：10.1（`mf repo info`）
+
+- [ ] **15.1.5 实现 `mf repo rm` 命令并替代 `mf rm-repo`**
+  - 在 `mf/cli.py` 的 `repo_app` 下实现 `repo rm` 子命令：
+    - 接受参数：
+      - `name`（可选）：命名空间名；
+      - `--repo/-r`（可选）：路径或名称；
+      - `--yes/-y`（必需）：确认删除。
+    - 解析目标仓库：
+      - 若提供 `name`：从注册表获取路径；
+      - 否则使用 `--repo/-r` 或 `_global_repo` 或当前目录解析仓库根路径；
+      - 若解析失败或路径下无 `.mf`/`schema.yaml`，则退出并提示“未检测到 MemoFlow 仓库”。
+    - 调用现有 `handle_remove_repo(repo_root, force=True)` 删除 MemoFlow 相关资源：
+      - `.mf/`、`schema.yaml`、`00-Inbox/`、JD 区间目录等。
+    - 删除后更新注册表：
+      - 若通过 name 调用，则使用 `remove_by_name(name)`；
+      - 否则使用 `remove_by_path(repo_root)`。
+    - 输出删除结果（包含删除的条目数量和目标路径）。
+  - 移除或废弃旧的 `mf rm-repo` 命令入口，确保新规范只有 `mf repo rm`。
+  - 编写 CLI 测试：
+    - 删除存在的命名空间（含注册表项）；
+    - 使用 `--repo` 路径删除；
+    - 未提供 `--yes` 时的拒绝行为。
+  - **参考需求**：10.2（命名空间删除与清理）
+
+---
+
+### 15.2 TUI 资源导航（Namespace / Area / Category / Item）
+
+- [ ] **15.2.1 在 Status TUI 顶部增加资源上下文条**
+  - 在 `mf/views/status_tui.py` 中：
+    - 在布局中预留一行或一块区域，用于显示当前上下文信息：
+      - `NS: <repo_name> | Area: <area_id or All> | Category: <category_id or All> | View: <Items/Tasks/Meetings/...>`。
+    - 利用现有的 repo_root 和（未来的）RepoRegistry 解析当前命名空间名称（没有注册时可使用目录名）。
+    - 确保在变更 Area/Category/视图时，该上下文条能即时刷新。
+  - 编写 TUI 层测试（如已有 snapshot/结构测试），至少验证上下文条文本构造逻辑。
+  - **参考需求**：11.1（资源分层模型）
+
+- [ ] **15.2.2 Area 选择视图**
+  - 在 `status_tui.py` 中新增一个用于选择 Area 的简单视图或对话框：
+    - 通过 `SchemaManager` 读取当前 repo 的 `schema.areas`。
+    - 显示所有 Areas：`id` + `name` + 类别数量。
+  - 为 TUI 分配一个快捷键（例如 `a` 或 `A`），用于打开 Area 选择视图。
+  - 当用户在 Area 列表中选择某个 Area 并确认时：
+    - 更新内部状态（例如 `self.current_area_id`）。
+    - 调用现有的过滤逻辑，基于 JD ID 范围过滤 `self.filtered_files`。
+    - 更新上下文条中的 `Area` 显示。
+  - 编写测试：
+    - 给定一个包含多个 Area 的 schema，验证过滤后只剩下指定 Area 范围内的 Memo。
+  - **参考需求**：11.1（Area 选择与过滤）
+
+- [ ] **15.2.3 Category 选择视图**
+  - 在 Area 已选定的前提下，为 Category 增加类似的选择视图：
+    - 显示当前 Area 下的所有 Categories：`id` + `name` + `range`。
+  - 为 TUI 分配一个快捷键（例如 `g` 或其它不冲突键），用于打开 Category 选择视图。
+  - 当用户选择 Category 并确认时：
+    - 更新内部状态（例如 `self.current_category_id`）。
+    - 在已有 Area 过滤的基础上，进一步基于 Category.range 过滤 Memo。
+    - 更新上下文条中的 `Category` 显示。
+  - 编写测试：
+    - 在给定 schema 和 Memo 列表的情况下，验证 Area+Category 双重过滤的正确性。
+  - **参考需求**：11.1（Category 选择与过滤）
+
+---
+
+### 15.3 类型视图与 CLI 资源接口（规划阶段）
+
+- [ ] **15.3.1 设计 Task/Meeting 类型视图的快捷键与过滤策略**
+  - 在 `status_tui` 设计中预留：
+    - Task 视图：显示所有 `type == "task"` 且 `status == "open"` 的 Memo，可继续按 Area/Category 过滤。
+    - Meeting 视图：显示所有 `type == "meeting"` 的 Memo，按时间维度排序或高亮近期/未来会议。
+  - 定义视图切换键（例如 `Shift+T` / `Shift+M`），并在上下文条的 `View` 字段中反映当前视角。
+  - 确保在这些视图中，现有的操作键（`u`, `m`, `e`, `n`）语义与默认视图一致。
+  - **参考需求**：11.2（类型视图与工作流视角）
+
+- [ ] **15.3.2 草拟 CLI 资源视图命令的接口（不立即实现全部）**
+  - 在设计层和 CLI 骨架中预留以下命令（可先加占位 help，不必立刻实现完整逻辑）：
+    - `mf get areas`
+    - `mf get categories --area <id>`
+    - `mf get items [--type task|meeting|note|email] [--status open|done] [--area <id>] [--category <id>]`
+    - `mf describe item <hash_or_id>`
+  - 将这些命令与现有服务层（FileManager/SchemaManager/HashManager/GitEngine）对应好，避免未来实现时大幅重构。
+  - **参考需求**：11.3（CLI 资源视图）
+
+---
+
 ## 任务执行说明
 
 每个任务都应该：

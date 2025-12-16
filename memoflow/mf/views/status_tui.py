@@ -61,11 +61,11 @@ class StatusTUI(App):
     """
     
     BINDINGS = [
-        Binding("q", "quit", "Quit", priority=True),
-        Binding("/", "toggle_filter", "Filter", priority=True),
+        Binding("q", "quit", "Quit", priority=True, show=False),
+        Binding("/", "toggle_filter", "Filter", priority=True, show=False),
         Binding("enter", "view_detail", "View", priority=False, show=False),
         Binding("escape", "close_detail_or_editor", "Close", priority=True, show=False),
-        Binding("r", "refresh", "Refresh", priority=True),
+        Binding("r", "refresh", "Refresh", priority=True, show=False),
         Binding("t", "toggle_type", "Type", priority=True),
         Binding("s", "toggle_status", "Status", priority=True),
         Binding("e", "open_editor", "Editor", priority=True),
@@ -77,6 +77,9 @@ class StatusTUI(App):
         Binding("l", "show_list", "List View", priority=True),
         Binding("T", "show_timeline", "Timeline", priority=True),
         Binding("C", "show_calendar", "Calendar", priority=True),
+        Binding("S", "show_schema", "Schema", priority=True),
+        Binding("A", "select_area", "Area", priority=True),
+        Binding("G", "select_category", "Category", priority=True),
     ]
     
     def __init__(self, repo_root: Path, editor: Optional[str] = None, **kwargs):
@@ -87,6 +90,9 @@ class StatusTUI(App):
         self.current_filter: Optional[str] = None
         self.type_filter: Optional[str] = None
         self.status_filter: Optional[str] = None
+        self.current_area_id: Optional[int] = None
+        self.current_category_range: Optional[tuple[float, float]] = None
+        self.current_view: str = "Items"
         self.selected_row: Optional[int] = None
         self._pending_action: Optional[tuple] = None  # 用于存储待处理的操作
         self._editor_process: Optional[subprocess.Popen] = None  # 用于存储编辑器进程（GUI编辑器）
@@ -130,6 +136,7 @@ class StatusTUI(App):
         """创建应用布局"""
         yield Header(show_clock=True)
         with Vertical():
+            yield Static("", id="context-bar")
             yield Static("", id="stats")
             with Horizontal():
                 yield DataTable(id="file-table")
@@ -146,6 +153,7 @@ class StatusTUI(App):
         self.refresh_data()
         self.update_table()
         self.update_stats()
+        self.update_context_bar()
         
         # 设置焦点到表格
         table.focus()
@@ -186,7 +194,7 @@ class StatusTUI(App):
         except Exception as e:
             logger.debug(f"Error in on_key check: {e}")
         
-        # 如果按键是 c、u、n、m、l、T、C，直接调用对应的 action
+        # 如果按键是 c、u、n、m、R、l、T、C、A、G，直接调用对应的 action
         # 这样可以确保即使 DataTable 捕获了按键，也能正常工作
         if event.key == "c":
             self.action_change_type()
@@ -204,6 +212,10 @@ class StatusTUI(App):
             self.action_move_file()
             event.prevent_default()
             event.stop()
+        elif event.key == "R":
+            self.action_rebuild_index()
+            event.prevent_default()
+            event.stop()
         elif event.key == "l":
             self.action_show_list()
             event.prevent_default()
@@ -216,6 +228,14 @@ class StatusTUI(App):
             self.action_show_calendar()
             event.prevent_default()
             event.stop()
+        elif event.key in ("a", "A"):
+            self.action_select_area()
+            event.prevent_default()
+            event.stop()
+        elif event.key in ("g", "G"):
+            self.action_select_category()
+            event.prevent_default()
+            event.stop()
     
     def refresh_data(self) -> None:
         """刷新数据"""
@@ -225,6 +245,33 @@ class StatusTUI(App):
     def apply_filters(self) -> None:
         """应用所有过滤器"""
         self.filtered_files = self.all_files.copy()
+        
+        # Area/Category 过滤（基于 JD ID）
+        if self.current_area_id is not None or self.current_category_range is not None:
+            filtered_by_location: List[Memo] = []
+            for memo in self.filtered_files:
+                try:
+                    # 解析 ID: PREFIX-AREA.ITEMPART
+                    _, numeric = memo.id.split("-", 1)
+                    area_str, item_str = numeric.split(".", 1)
+                    area_id = int(area_str)
+                    # item_id 作为 float，形如 11.001 或 11.01
+                    item_val = float(f"{area_str}.{item_str}")
+                except Exception:
+                    # ID 格式异常时直接跳过（不纳入过滤结果）
+                    continue
+                
+                if self.current_area_id is not None and area_id != self.current_area_id:
+                    continue
+                
+                if self.current_category_range is not None:
+                    start, end = self.current_category_range
+                    if not (start <= item_val <= end):
+                        continue
+                
+                filtered_by_location.append(memo)
+            
+            self.filtered_files = filtered_by_location
         
         # 类型过滤
         if self.type_filter:
@@ -253,6 +300,9 @@ class StatusTUI(App):
         
         # 按创建时间倒序排序
         self.filtered_files.sort(key=lambda x: x.created_at, reverse=True)
+        
+        # 更新上下文条
+        self.update_context_bar()
     
     def update_stats(self) -> None:
         """更新统计信息（显示在表格上方）"""
@@ -302,6 +352,55 @@ class StatusTUI(App):
             stats_widget.update(stats_text)
         else:
             stats_widget.update("No files")
+
+    def update_context_bar(self) -> None:
+        """更新顶部资源上下文条（Namespace / Area / Category / View）"""
+        try:
+            ctx_widget = self.query_one("#context-bar", Static)
+        except Exception as e:
+            logger.debug(f"Context bar widget not ready: {e}")
+            return
+
+        # Namespace 名称：优先使用注册表中的名称，否则使用目录名
+        repo_name = self.repo_root.name
+        try:
+            from mf.core.repo_registry import RepoRegistry
+
+            registry = RepoRegistry()
+            registered = registry.find_by_path(self.repo_root)
+            if registered:
+                repo_name = registered.name
+        except Exception as e:
+            logger.debug(f"Failed to resolve repo name from registry: {e}")
+
+        # Area 显示
+        area_display = "All"
+        if self.current_area_id is not None:
+            try:
+                schema = self.schema_mgr.get_schema()
+                area = schema.get_area(self.current_area_id)
+                if area:
+                    area_display = f"{self.current_area_id} ({area.name})"
+                else:
+                    area_display = str(self.current_area_id)
+            except Exception:
+                area_display = str(self.current_area_id)
+
+        # Category 显示（基于 range）
+        category_display = "All"
+        if self.current_category_range is not None:
+            start, end = self.current_category_range
+            category_display = f"{start:.3f}-{end:.3f}"
+
+        view_display = self.current_view
+
+        ctx_text = (
+            f"NS: {repo_name} | "
+            f"Area: {area_display} | "
+            f"Category: {category_display} | "
+            f"View: {view_display}"
+        )
+        ctx_widget.update(ctx_text)
     
     def update_table(self) -> None:
         """更新表格数据"""
@@ -511,11 +610,92 @@ class StatusTUI(App):
                         # 刷新数据
                         self.refresh_data()
                         self.update_table()
-                        self.update_stats()
                         logger.debug("Data refreshed after move")
                     except Exception as e:
                         logger.error(f"Error moving file: {e}", exc_info=True)
                         self.notify(f"✗ Error: {e}", severity="error", timeout=5.0)
+                
+                elif action_type == "select_area":
+                    # 选择 Area 过滤
+                    new_area_id: Optional[int] = None
+                    if new_value:
+                        try:
+                            new_area_id = int(new_value)
+                        except ValueError:
+                            self.notify(f"Invalid area id: {new_value}", severity="error")
+                            return
+                        # 验证 area 是否存在
+                        try:
+                            schema = self.schema_mgr.get_schema()
+                            if not schema.get_area(new_area_id):
+                                self.notify(f"Area {new_area_id} not found in schema", severity="error")
+                                return
+                        except Exception as e:
+                            logger.error(f"Error validating area id: {e}", exc_info=True)
+                            self.notify(f"Error validating area: {e}", severity="error")
+                            return
+                    
+                    # 更新过滤状态：切换 area 会清除 category 过滤
+                    self.current_area_id = new_area_id
+                    self.current_category_range = None
+                    
+                    # 刷新视图
+                    self.apply_filters()
+                    self.update_table()
+                    
+                    if new_area_id is None:
+                        self.notify("Area filter cleared (All areas)", severity="info", timeout=2.0)
+                    else:
+                        self.notify(f"Area filter set to {new_area_id}", severity="info", timeout=2.0)
+                
+                elif action_type == "select_category":
+                    # 选择 Category 过滤（依赖当前 Area）
+                    if self.current_area_id is None:
+                        self.notify("Please select an Area first", severity="warning", timeout=3.0)
+                        return
+                    
+                    new_category_range: Optional[tuple[float, float]] = None
+                    if new_value:
+                        try:
+                            cat_id = int(new_value)
+                        except ValueError:
+                            self.notify(f"Invalid category id: {new_value}", severity="error")
+                            return
+                        
+                        try:
+                            schema = self.schema_mgr.get_schema()
+                            area = schema.get_area(self.current_area_id)
+                            if not area:
+                                self.notify(f"Area {self.current_area_id} not found in schema", severity="error")
+                                return
+                            category = area.get_category(cat_id)
+                            if not category:
+                                self.notify(
+                                    f"Category {cat_id} not found in area {self.current_area_id}",
+                                    severity="error",
+                                )
+                                return
+                            new_category_range = category.range
+                        except Exception as e:
+                            logger.error(f"Error validating category id: {e}", exc_info=True)
+                            self.notify(f"Error validating category: {e}", severity="error")
+                            return
+                    
+                    self.current_category_range = new_category_range
+                    
+                    # 刷新视图
+                    self.apply_filters()
+                    self.update_table()
+                    
+                    if new_category_range is None:
+                        self.notify("Category filter cleared (All categories)", severity="info", timeout=2.0)
+                    else:
+                        start, end = new_category_range
+                        self.notify(
+                            f"Category filter set to range {start:.3f}-{end:.3f}",
+                            severity="info",
+                            timeout=2.0,
+                        )
             else:
                 # 没有 pending_action，这是正常的过滤器输入
                 self.current_filter = event.value
@@ -823,6 +1003,35 @@ class StatusTUI(App):
             self.notify(f"Error: {e}", severity="error")
             logger.error(f"Error in action_capture: {e}")
     
+    def action_select_area(self) -> None:
+        """选择 Area 进行过滤"""
+        try:
+            schema = self.schema_mgr.get_schema()
+            areas = getattr(schema, "areas", [])
+            if not areas:
+                self.notify("No areas defined in schema", severity="warning", timeout=3.0)
+                return
+            
+            # 构建区域摘要信息
+            area_summary = ", ".join(f"{area.id}:{area.name}" for area in areas)
+            
+            filter_input = self.query_one("#filter-input", Input)
+            filter_input.placeholder = "Enter Area ID (e.g., 11) or empty for All..."
+            filter_input.value = ""
+            filter_input.remove_class("hidden")
+            filter_input.focus()
+            
+            # 设置 pending_action 以在提交时处理
+            self._pending_action = ("select_area", None)
+            self.notify(
+                f"Areas: {area_summary}",
+                severity="info",
+                timeout=6.0,
+            )
+        except Exception as e:
+            self.notify(f"Error: {e}", severity="error")
+            logger.error(f"Error in action_select_area: {e}", exc_info=True)
+    
     def action_move_file(self) -> None:
         """移动选中的文件（支持交互式选择区域和类别）"""
         memo = self._get_selected_memo()
@@ -860,6 +1069,46 @@ class StatusTUI(App):
             self.notify(f"Error: {e}", severity="error")
             logger.error(f"Error in action_move_file: {e}")
     
+    def action_select_category(self) -> None:
+        """选择 Category 进行过滤（依赖当前 Area）"""
+        try:
+            if self.current_area_id is None:
+                self.notify("Please select an Area first (press 'A')", severity="warning", timeout=3.0)
+                return
+            
+            schema = self.schema_mgr.get_schema()
+            area = schema.get_area(self.current_area_id)
+            if not area or not area.categories:
+                self.notify(
+                    f"No categories defined for area {self.current_area_id}",
+                    severity="warning",
+                    timeout=3.0,
+                )
+                return
+            
+            # 构建类别摘要信息
+            cat_summary = ", ".join(
+                f"{cat.id}:{cat.name}({cat.range[0]:.3f}-{cat.range[1]:.3f})"
+                for cat in area.categories
+            )
+            
+            filter_input = self.query_one("#filter-input", Input)
+            filter_input.placeholder = "Enter Category ID (e.g., 1) or empty for All..."
+            filter_input.value = ""
+            filter_input.remove_class("hidden")
+            filter_input.focus()
+            
+            # 设置 pending_action
+            self._pending_action = ("select_category", None)
+            self.notify(
+                f"Categories in Area {self.current_area_id}: {cat_summary}",
+                severity="info",
+                timeout=8.0,
+            )
+        except Exception as e:
+            self.notify(f"Error: {e}", severity="error")
+            logger.error(f"Error in action_select_category: {e}", exc_info=True)
+    
     def action_rebuild_index(self) -> None:
         """重建哈希索引"""
         try:
@@ -876,9 +1125,15 @@ class StatusTUI(App):
         """显示列表视图（树形）"""
         try:
             # 暂停 TUI
-            self.suspend()
-            from mf.views.list_view import show_list
-            show_list(self.repo_root, tree_format=True)
+            with self.suspend():
+                from mf.views.list_view import show_list, console
+                show_list(self.repo_root, tree_format=True)
+                # 等待用户按 Enter 键
+                console.print("\n[dim]Press Enter to return...[/dim]")
+                try:
+                    input()
+                except (EOFError, KeyboardInterrupt):
+                    pass
             # 恢复后刷新数据
             self.action_refresh()
         except Exception as e:
@@ -889,9 +1144,15 @@ class StatusTUI(App):
         """显示时间轴视图"""
         try:
             # 暂停 TUI
-            self.suspend()
-            from mf.views.timeline_view import show_timeline
-            show_timeline(self.repo_root, since="1 week ago", type_filter=None)
+            with self.suspend():
+                from mf.views.timeline_view import show_timeline, console
+                show_timeline(self.repo_root, since="1 week ago", type_filter=None)
+                # 等待用户按 Enter 键
+                console.print("\n[dim]Press Enter to return...[/dim]")
+                try:
+                    input()
+                except (EOFError, KeyboardInterrupt):
+                    pass
             # 恢复后刷新数据
             self.action_refresh()
         except Exception as e:
@@ -902,14 +1163,39 @@ class StatusTUI(App):
         """显示日历视图"""
         try:
             # 暂停 TUI
-            self.suspend()
-            from mf.views.calendar_view import show_calendar
-            show_calendar(self.repo_root, month=None, year=None, type_filter=None)
+            with self.suspend():
+                from mf.views.calendar_view import show_calendar, console
+                show_calendar(self.repo_root, month=None, year=None, type_filter=None)
+                # 等待用户按 Enter 键
+                console.print("\n[dim]Press Enter to return...[/dim]")
+                try:
+                    input()
+                except (EOFError, KeyboardInterrupt):
+                    pass
             # 恢复后刷新数据
             self.action_refresh()
         except Exception as e:
             self.notify(f"Error: {e}", severity="error")
             logger.error(f"Error showing calendar: {e}", exc_info=True)
+    
+    def action_show_schema(self) -> None:
+        """显示 Schema 配置"""
+        try:
+            # 暂停 TUI
+            with self.suspend():
+                from mf.views.schema_view import show_schema, console
+                show_schema(self.repo_root)
+                # 等待用户按 Enter 键
+                console.print("\n[dim]Press Enter to return...[/dim]")
+                try:
+                    input()
+                except (EOFError, KeyboardInterrupt):
+                    pass
+            # 恢复后刷新数据（虽然 schema 显示不需要刷新，但保持一致性）
+            self.action_refresh()
+        except Exception as e:
+            self.notify(f"Error: {e}", severity="error")
+            logger.error(f"Error showing schema: {e}", exc_info=True)
 
 
 def show_status_tui(repo_root: Path, editor: Optional[str] = None):

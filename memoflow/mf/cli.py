@@ -17,10 +17,17 @@ app = typer.Typer(
     name="mf",
     help="MemoFlow - Your Second Brain",
     add_completion=False,
-    no_args_is_help=True,
+    no_args_is_help=False,  # 设置为 False，让无参数时执行 callback 启动 TUI
     rich_markup_mode="rich",
     context_settings={"help_option_names": ["-h", "--help"]},
 )
+
+# Sub-app for repo management
+repo_app = typer.Typer(
+    name="repo",
+    help="Manage MemoFlow repositories (list, info, etc.)",
+)
+app.add_typer(repo_app, name="repo")
 
 # 全局上下文，用于存储 --repo 选项
 _global_repo: Optional[str] = None
@@ -96,15 +103,45 @@ def get_repo_root(repo_path: Optional[str] = None) -> Path:
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
-    repo: Optional[str] = typer.Option(None, "--repo", "-r", help="Repository path or name (e.g., 'test_repo', 'test_repo/sub_repo')"),
+    repo: Optional[str] = typer.Option(
+        None,
+        "--repo",
+        "-r",
+        help="Repository path or name (e.g., 'test_repo', 'test_repo/sub_repo')",
+        hidden=True,
+    ),
+    editor: Optional[str] = typer.Option(
+        None,
+        "--editor",
+        "-e",
+        help="External editor command (e.g., typora, code, vim). Overrides repository config.",
+    ),
 ):
-    """MemoFlow - Your Second Brain"""
+    """MemoFlow - Your Second Brain
+    
+    Run 'mf' without arguments to launch the interactive TUI dashboard.
+    Use 'mf <command>' for specific operations.
+    """
     global _global_repo
     if repo:
         _global_repo = repo
-    # 如果没有命令，不执行任何操作（让 Typer 显示帮助）
+    
+    # 如果没有命令，启动 TUI
     if ctx.invoked_subcommand is None:
-        pass
+        repo_path = repo or _global_repo
+        repo_root = get_repo_root(repo_path)
+        
+        try:
+            from mf.views.status_tui import show_status_tui
+            show_status_tui(repo_root, editor=editor)
+        except ImportError:
+            typer.echo("✗ Textual library not installed. Install with: pip install 'memoflow[tui]'", err=True)
+            typer.echo("\nFor static status output, use: mf status", err=True)
+            raise typer.Exit(1)
+        except Exception as e:
+            typer.echo(f"✗ Failed to start TUI: {e}", err=True)
+            typer.echo("\nFor static status output, use: mf status", err=True)
+            raise typer.Exit(1)
 
 
 @app.command()
@@ -147,7 +184,7 @@ def init(
         raise typer.Exit(1)
 
 
-@app.command(name="capture")
+@app.command(name="capture", hidden=True)
 def capture(
     content: str = typer.Argument(..., help="Content to capture"),
     type: Optional[str] = typer.Option(None, "-t", "--type", help="File type (meeting, note, task, email). If not specified, creates untyped file in inbox"),
@@ -155,7 +192,7 @@ def capture(
 ):
     """Quick capture: mf capture -t task "Fix bug #123" or mf capture "Quick note"
     
-    Note: This command is also available in 'mf status' TUI (press 'n' key).
+    Note: This command is also available in interactive TUI (run 'mf' and press 'n' key).
     Use CLI for scripting/automation, use TUI for interactive use.
     """
     from mf.commands.capture import handle_capture
@@ -189,7 +226,7 @@ def new(
     capture(content, type, repo)
 
 
-@app.command(name="move")
+@app.command(name="move", hidden=True)
 def move(
     hash: str = typer.Argument(..., help="File hash (supports partial match)"),
     old_path: str = typer.Argument(..., help="Old path (JD ID or relative path)"),
@@ -198,7 +235,7 @@ def move(
 ):
     """Move file: mf move 7f9a HANK-00.01 HANK-12.04
     
-    Note: This command is also available in 'mf status' TUI (press 'm' key).
+    Note: This command is also available in interactive TUI (run 'mf' and press 'm' key).
     Use CLI for scripting/automation, use TUI for interactive use.
     """
     from mf.commands.organize import handle_move
@@ -239,7 +276,7 @@ def finish(
 ):
     """Mark task as done: mf finish 7f9a
     
-    Note: This command is also available in 'mf status' TUI (press 'f' key).
+    Note: This command is also available in interactive TUI (run 'mf' and press 'f' key).
     Use CLI for scripting/automation, use TUI for interactive use.
     """
     from mf.commands.engage import mark_finished
@@ -272,7 +309,7 @@ def type(
 ):
     """Change file type: mf type 7f9a task
     
-    Note: This command is also available in 'mf status' TUI (press 'c' key).
+    Note: This command is also available in interactive TUI (run 'mf' and press 'c' key).
     Use CLI for scripting/automation, use TUI for interactive use.
     """
     from mf.commands.update import handle_update_type
@@ -303,7 +340,7 @@ def rebuild_index(
 ):
     """Rebuild hash index
     
-    Note: This command is also available in 'mf status' TUI (press 'R' key).
+    Note: This command is also available in interactive TUI (run 'mf' and press 'R' key).
     Use CLI for scripting/automation, use TUI for interactive use.
     """
     from mf.commands.organize import handle_rebuild_index
@@ -352,74 +389,39 @@ def status(
     all: bool = typer.Option(False, "--all", "-a", help="Show all files"),
     type: Optional[str] = typer.Option(None, "--type", "-t", help="Filter by file type (task, meeting, note, email)"),
     status: Optional[str] = typer.Option(None, "--status", "-s", help="Filter by status (open, done)"),
-    interactive: bool = typer.Option(True, "--interactive/--no-interactive", "-i", help="Use interactive TUI mode (default: True)"),
-    editor: Optional[str] = typer.Option(None, "--editor", "-e", help="External editor command (e.g., typora, code, vim). Overrides repository config. If not specified, uses repository config or auto-detects."),
 ):
-    """Show status: mf status
+    """Show repository statistics and file list
+    
+    Displays a summary of repository statistics (Inbox count, open tasks, etc.)
+    and a table of files. For interactive TUI mode, run 'mf' without arguments.
 
     Examples:
-      mf status                    # Interactive TUI mode (default)
-      mf status --no-interactive    # Static output mode
-      mf status --all              # Show all files (static mode)
-      mf status --limit 50         # Show 50 most recent files (static mode)
-      mf status --type task        # Show only tasks (static mode)
-      mf status --status open      # Show only open files (static mode)
-
-    Interactive Mode Key Bindings:
-      q          - Quit
-      /          - Toggle filter input / Close detail panel / Close editor
-      Enter      - View file detail
-      Escape     - Close detail panel / Close editor
-      r          - Refresh data
-      t          - Toggle type filter
-      s          - Toggle status filter
-      e          - Open file in external editor
-      c          - Change file type
-      u          - Change file status (toggle open/done)
-      n          - New/Capture (create new memo)
-      m          - Move file (change JD ID)
-      R          - Rebuild hash index
-      l          - Show list view (tree)
-      T          - Show timeline view
-      C          - Show calendar view
+      mf status                    # Show statistics and file list (default: 20 files)
+      mf status --all              # Show all files
+      mf status --limit 50         # Show 50 most recent files
+      mf status --type task         # Show only tasks
+      mf status --status open      # Show only open files
+      mf status --type task --status open  # Show only open tasks
     """
     repo_path = repo or _global_repo
     repo_root = get_repo_root(repo_path)
     
-    if interactive:
-        # 使用交互式 TUI 模式
-        try:
-            from mf.views.status_tui import show_status_tui
-            show_status_tui(repo_root, editor=editor)
-        except ImportError:
-            typer.echo("✗ Textual library not installed. Install with: pip install 'memoflow[tui]'", err=True)
-            typer.echo("Falling back to static mode...", err=True)
-            interactive = False
-        except Exception as e:
-            typer.echo(f"✗ Failed to start TUI: {e}", err=True)
-            typer.echo("Falling back to static mode...", err=True)
-            interactive = False
+    from mf.views.status_view import show_status
     
-    if not interactive:
-        # 使用静态输出模式
-        from mf.views.status_view import show_status
-        
-        # 验证过滤选项
-        if type and type not in ["task", "meeting", "note", "email"]:
-            typer.echo(f"✗ Invalid type: {type}. Must be one of: task, meeting, note, email", err=True)
-            raise typer.Exit(1)
-        
-        if status and status not in ["open", "done"]:
-            typer.echo(f"✗ Invalid status: {status}. Must be one of: open, done", err=True)
-            raise typer.Exit(1)
-        
-        try:
-            show_status(repo_root, limit=limit, show_all=all, type_filter=type, status_filter=status)
-        except Exception as e:
-            typer.echo(f"✗ Failed to show status: {e}", err=True)
-            raise typer.Exit(1)
-
-
+    # 验证过滤选项
+    if type and type not in ["task", "meeting", "note", "email"]:
+        typer.echo(f"✗ Invalid type: {type}. Must be one of: task, meeting, note, email", err=True)
+        raise typer.Exit(1)
+    
+    if status and status not in ["open", "done"]:
+        typer.echo(f"✗ Invalid status: {status}. Must be one of: open, done", err=True)
+        raise typer.Exit(1)
+    
+    try:
+        show_status(repo_root, limit=limit, show_all=all, type_filter=type, status_filter=status)
+    except Exception as e:
+        typer.echo(f"✗ Failed to show status: {e}", err=True)
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -468,6 +470,187 @@ def schema_cmd(
             raise typer.Exit(1)
     except Exception as e:
         typer.echo(f"✗ Failed: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@repo_app.command(name="list")
+def repo_list():
+    """List registered MemoFlow repositories."""
+    from mf.core.repo_registry import RepoRegistry
+
+    registry = RepoRegistry()
+    repos = registry.list_repos()
+    if not repos:
+        typer.echo("No repositories registered yet. Initialize one with 'mf init'.")
+        return
+
+    typer.echo("Registered MemoFlow repositories:")
+    for repo in repos:
+        typer.echo(f"  {repo.name:15} {repo.path}")
+
+
+@repo_app.command(name="info")
+def repo_info(
+    name: Optional[str] = typer.Argument(
+        None,
+        help="Repository name (from registry). If omitted, uses --repo/-r or current directory.",
+    ),
+    repo: Optional[str] = typer.Option(
+        None,
+        "--repo",
+        "-r",
+        help="Repository path or name (overrides global --repo)",
+    ),
+):
+    """Show detailed information about a MemoFlow repository."""
+    from mf.core.repo_registry import RepoRegistry
+    from mf.core.schema_manager import SchemaManager
+    from mf.core.hash_manager import HashManager
+    from mf.core.git_engine import GitEngine
+    from mf.core.file_manager import FileManager
+
+    registry = RepoRegistry()
+
+    # 1) 优先使用 name 参数（注册名称）
+    repo_root: Optional[Path] = None
+    repo_name: Optional[str] = None
+
+    if name:
+        registered = registry.get_by_name(name)
+        if not registered:
+            typer.echo(f"✗ Repo '{name}' not found in registry", err=True)
+            raise typer.Exit(1)
+        repo_root = registered.path
+        repo_name = registered.name
+    else:
+        # 2) 其次使用 --repo/-r 或全局 _global_repo
+        repo_path = repo or _global_repo
+        if repo_path:
+            repo_root = get_repo_root(repo_path)
+        else:
+            repo_root = get_repo_root(None)
+
+        registered = registry.find_by_path(repo_root)
+        if registered:
+            repo_name = registered.name
+        else:
+            # 未在注册表中，使用目录名作为名称并自动注册
+            repo_root = repo_root.resolve()
+            repo_name = repo_root.name
+            try:
+                registry.add_repo(repo_name, repo_root)
+            except Exception as e:
+                typer.echo(f"⚠ Failed to register repo in registry: {e}", err=True)
+
+    repo_root = repo_root.resolve()
+
+    # 收集基本信息
+    try:
+        schema_mgr = SchemaManager(repo_root)
+        schema = schema_mgr.load_schema()
+        prefix = schema.user_prefix
+        areas_count = len(schema.areas)
+        categories_count = sum(len(a.categories) for a in schema.areas)
+    except Exception as e:
+        typer.echo(f"✗ Failed to load schema from {repo_root}: {e}", err=True)
+        raise typer.Exit(1)
+
+    try:
+        hash_mgr = HashManager(repo_root)
+        git_engine = GitEngine(repo_root)
+        file_mgr = FileManager(repo_root, hash_mgr, schema_mgr, git_engine)
+        files = file_mgr.query()
+        total_files = len(files)
+
+        # 计算 Inbox 数量（与 status 视图保持一致）
+        inbox_count = 0
+        for f in files:
+            if not f.type or f.type == "":
+                if f.id.startswith(f"{prefix}-00.") or f.id.startswith(
+                    f"{prefix}-00.0"
+                ) or f.id.startswith(f"{prefix}-00.00"):
+                    inbox_count += 1
+    except Exception as e:
+        typer.echo(f"✗ Failed to inspect files in {repo_root}: {e}", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"Repo name   : {repo_name}")
+    typer.echo(f"Path        : {repo_root}")
+    typer.echo(f"User prefix : {prefix}")
+    typer.echo(f"Areas       : {areas_count}")
+    typer.echo(f"Categories  : {categories_count}")
+    typer.echo(f"Files       : {total_files} (Inbox: {inbox_count})")
+
+
+@repo_app.command(name="rm")
+def repo_rm(
+    name: Optional[str] = typer.Argument(
+        None,
+        help="Repository name (from registry). If omitted, uses --repo/-r or current directory.",
+    ),
+    repo: Optional[str] = typer.Option(
+        None,
+        "--repo",
+        "-r",
+        help="Repository path or name (overrides global --repo)",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Confirm removal without prompt",
+    ),
+):
+    """Remove MemoFlow repo data: mf repo rm NAME --yes
+
+    Deletes all MemoFlow-related content in the target repo and removes it
+    from the global registry:
+      - .mf directory (config, hash index, etc.)
+      - schema.yaml
+      - default folders (00-Inbox, numeric ranges like 10-20, 11-21, etc.)
+    """
+    from mf.commands.cleanup import handle_remove_repo
+    from mf.core.repo_registry import RepoRegistry
+
+    if not yes:
+        typer.echo("✗ This is a dangerous operation. Re-run with --yes to confirm.", err=True)
+        raise typer.Exit(1)
+
+    registry = RepoRegistry()
+
+    # 解析 repo_root 和名称
+    repo_root: Optional[Path]
+    repo_name: Optional[str] = None
+
+    if name:
+        registered = registry.get_by_name(name)
+        if not registered:
+            typer.echo(f"✗ Repo '{name}' not found in registry", err=True)
+            raise typer.Exit(1)
+        repo_root = registered.path
+        repo_name = registered.name
+    else:
+        repo_path = repo or _global_repo
+        if repo_path:
+            repo_root = get_repo_root(repo_path)
+        else:
+            repo_root = get_repo_root(None)
+
+        registered = registry.find_by_path(repo_root)
+        repo_name = registered.name if registered else None
+
+    repo_root = repo_root.resolve()
+
+    try:
+        deleted = handle_remove_repo(repo_root, force=True)
+        # 从注册表中移除
+        if repo_name:
+            registry.remove_by_name(repo_name)
+        else:
+            registry.remove_by_path(repo_root)
+        typer.echo(f"✓ Removed MemoFlow data ({deleted} items) from {repo_root}")
+    except Exception as e:
+        typer.echo(f"✗ Failed to remove repo data: {e}", err=True)
         raise typer.Exit(1)
 
 

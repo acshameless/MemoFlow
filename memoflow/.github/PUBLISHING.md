@@ -65,12 +65,43 @@ mf version
 # 安装构建工具
 pip install build twine
 
-# 构建包
+# 构建包（在项目根目录 memoflow 下执行）
 python -m build
 
 # 上传到 PyPI（需要 PyPI API token）
 twine upload dist/*
 ```
+
+## 本地打包与验证
+
+在本地开发环境中，可以先打包并安装到虚拟环境里做最终验证：
+
+```bash
+cd memoflow
+
+# 安装/升级打包工具
+python -m pip install --upgrade pip build
+
+# 清理旧产物（可选）
+rm -rf dist/ build/
+
+# 构建 wheel 和 sdist
+python -m build
+
+# 创建一个干净的测试虚拟环境
+python -m venv .venv-test
+source .venv-test/bin/activate  # Windows 使用 .venv-test\Scripts\activate
+
+# 从本地 dist 安装
+pip install dist/memoflow-*.whl
+
+# 验证 mf 是否可用
+mf --help
+mf status --no-interactive
+```
+
+> 说明：在仓库源码目录中直接运行 `mf`，通常是因为你已经在当前 Python 环境里安装过一次（例如 `pip install -e .` 或从 PyPI 安装），
+> 这个安装会在你的环境 `PATH` 中注册一个 `mf` 可执行入口脚本，所以不需要每次修改后都重新打包才能使用命令行。
 
 ## 注意事项
 

@@ -58,6 +58,29 @@ MemoFlow（记忆流）是一个基于 **Python 3** 构建的命令行/TUI 工�
 - **柜子与抽屉**：支持通过配置文件 (`schema.yaml`) 自定义柜子（Area）和抽屉（Category）的名称与结构，不硬编码
 - **标签系统**：支持自定义标签池（`tags.yaml`，可选）
 
+#### 4. Namespace & Resource Model（命名空间与资源模型）
+
+在双重索引和动态 Schema 之上，引入一层类似 k8s/k9s 的资源视角：
+
+- **Namespace（命名空间）**：对应一个 MemoFlow 仓库（repo）
+  - 由 `schema.yaml`、`.mf/`、Markdown 目录树和 Git 历史共同构成。
+  - 在用户级别的注册表（例如 `~/.memoflow/repos.json`）中以 `name + path` 形式登记（类似 kubeconfig 中的 contexts）。
+  - 通过 `mf repo list/info/rm` 等子命令进行管理。
+
+- **Resource Group（资源分组）**：
+  - **Area（柜子）**：`schema.areas` 中的每个区域（如 11=项目、20=学习），是 item 的第一层分组。
+  - **Category（抽屉）**：某个 Area 下的 `categories`，每个 Category 有一个连续的 JD ID 范围（range），是 item 的第二层分组。
+
+- **Resource Instance（资源实例）**：
+  - **Item（Memo）**：每个 Markdown 文件的 Memo 对象，是最小管理单元：
+    - 持久标识：短哈希 `uuid`（不可变，类似 Pod UID）。
+    - 逻辑位置：JD ID `id`（可变，随 Area/Category/Range 变动）。
+    - 业务属性：`type`（task/meeting/note/email/untyped）、`status`（open/done/...）、`due_date`、`tags` 等。
+
+- **视图（View）**：
+  - CLI 视图（例如未来的 `mf get areas/categories/items`、`mf describe item`）。
+  - TUI 视图（`mf status` 中的 namespace 条、Area/Category 选择视图、类型视图等），允许用户在 Namespace → Area → Category → Item 之间分层导航，就像 k9s 在 Namespace → Resource Kind → Pod 之间导航一样。
+
 ### 设计原则
 
 1. **文件即数据源**：所有数据以 Markdown 文件形式存储，人类可读且机器可解析
@@ -88,23 +111,27 @@ MemoFlow（记忆流）是一个基于 **Python 3** 构建的命令行/TUI 工�
 ```mermaid
 graph TB
     subgraph "用户接口层"
-        CLI[CLI Commands<br/>mf capture/list/move/finish]
-        TUI[TUI Interface<br/>可选]
+        CLI[CLI Commands<br/>mf repo/*, mf status/get/describe]
+        TUI[TUI Interface (Status TUI)<br/>Namespace & Resource Navigator]
+    end
+    
+    subgraph "命名空间与上下文"
+        RepoRegistry[Repo Registry<br/>~/.memoflow/repos.json]
+        ContextResolver[Context / Repo Resolver]
     end
     
     subgraph "核心服务层"
-        FileService[文件服务<br/>FileService]
-        HashService[哈希服务<br/>HashService]
-        SchemaService[Schema服务<br/>SchemaService]
-        GitService[Git服务<br/>GitService]
-        IndexService[索引服务<br/>IndexService]
+        FileService[文件服务<br/>FileManager]
+        HashService[哈希服务<br/>HashManager]
+        SchemaService[Schema服务<br/>SchemaManager]
+        GitService[Git服务<br/>GitEngine]
     end
     
-    subgraph "数据层"
+    subgraph "数据层（每个 Namespace/Repo 内部）"
         MarkdownFiles[Markdown文件<br/>.md]
         SchemaConfig[Schema配置<br/>schema.yaml]
         GitRepo[Git仓库<br/>.git]
-        HashIndex[哈希索引<br/>内存/缓存]
+        HashIndex[哈希索引<br/>.mf/hash_index.json]
     end
     
     subgraph "扩展层"
@@ -112,11 +139,14 @@ graph TB
         GitHubActions[GitHub Actions<br/>自动化工作流]
     end
     
-    CLI --> FileService
-    CLI --> HashService
-    CLI --> SchemaService
-    CLI --> GitService
-    TUI --> FileService
+    CLI --> ContextResolver
+    TUI --> ContextResolver
+    
+    ContextResolver --> RepoRegistry
+    ContextResolver --> FileService
+    ContextResolver --> HashService
+    ContextResolver --> SchemaService
+    ContextResolver --> GitService
     
     FileService --> MarkdownFiles
     FileService --> HashService
